@@ -1,0 +1,1332 @@
+openapi: 3.0.3
+info:
+  title: API - Site de l'association
+  version: 1.0.0
+  description: |
+    Contrat d'API du site de l'association (NestJS).
+
+    **Rôles (cumulatifs)** : `USER` < `MEMBER` (adhérent) < `BOARD` (bureau) < `TREASURER` (présidente / trésorière).
+    Un rôle a accès à tout ce qui est accessible aux rôles inférieurs.
+    Le rôle minimum requis est indiqué par `x-min-role` sur chaque opération.
+    `public` = aucune authentification.
+
+    **Conventions**
+    - Authentification : JWT Bearer (`Authorization: Bearer <token>`).
+    - Dates au format ISO 8601 (UTC), montants en centimes d'euro (entiers).
+    - Listes paginées : `page` (défaut 1) et `limit` (défaut 20, max 100).
+    - Erreurs : format unique `Error` (400, 401, 403, 404, 409).
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Développement
+tags:
+  - name: Auth
+  - name: Pages
+  - name: Costumes
+  - name: Events
+  - name: Orders
+  - name: Payments
+  - name: Memberships
+  - name: Groups
+  - name: Mails
+  - name: Photos
+  - name: Stats
+  - name: Minutes
+  - name: Accounting
+security:
+  - bearerAuth: []
+
+paths:
+  # ---------------------------------------------------------------- AUTH
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Créer un compte (US1.1)
+      x-min-role: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: Compte créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Se connecter par mail (US1.1)
+      description: Le message d'erreur ne précise pas si c'est le mail ou le mot de passe qui est faux.
+      x-min-role: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Connexion réussie
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/google:
+    get:
+      tags: [Auth]
+      summary: Démarrer la connexion Google (US1.2)
+      x-min-role: public
+      security: []
+      responses:
+        '302': { description: Redirection vers Google }
+  /auth/google/callback:
+    get:
+      tags: [Auth]
+      summary: Retour OAuth Google (US1.2)
+      description: Crée ou retrouve le compte lié au mail Google (pas de doublon) puis renvoie un JWT.
+      x-min-role: public
+      security: []
+      parameters:
+        - { name: code, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Connexion réussie
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Demander un lien de réinitialisation
+      description: Répond toujours 204, que le mail existe ou non.
+      x-min-role: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '204': { description: Demande prise en compte }
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Réinitialiser le mot de passe (lien à durée limitée)
+      x-min-role: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token: { type: string }
+                newPassword: { type: string, format: password, minLength: 10 }
+      responses:
+        '204': { description: Mot de passe modifié }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /me:
+    get:
+      tags: [Auth]
+      summary: Profil de l'utilisateur connecté
+      x-min-role: USER
+      responses:
+        '200':
+          description: Profil
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [Auth]
+      summary: Demander la suppression de mes données (RGPD)
+      x-min-role: USER
+      responses:
+        '204': { description: Compte anonymisé / supprimé }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /me/export:
+    get:
+      tags: [Auth]
+      summary: Exporter mes données personnelles (RGPD)
+      x-min-role: USER
+      responses:
+        '200':
+          description: Export JSON de mes données
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # --------------------------------------------------------------- PAGES
+  /pages:
+    get:
+      tags: [Pages]
+      summary: Lister les pages de présentation (US2.1 à 2.4)
+      x-min-role: public
+      security: []
+      responses:
+        '200':
+          description: Liste des pages
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Page' }
+  /pages/{slug}:
+    parameters:
+      - { name: slug, in: path, required: true, schema: { type: string }, example: partenaires }
+    get:
+      tags: [Pages]
+      summary: Consulter une page (asso, profs, bureau, partenaires, tarifs...)
+      x-min-role: public
+      security: []
+      responses:
+        '200':
+          description: Page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Page' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Pages]
+      summary: Modifier une page (US2.6 / US2.7)
+      description: |
+        Si `isSensitive = false` : rôle `BOARD` suffisant (US2.6).
+        Si `isSensitive = true` (prix de l'année...) : rôle `TREASURER` requis (US2.7), sinon 403.
+        Chaque modification est tracée (qui, quand, avant / après).
+      x-min-role: BOARD (TREASURER si page sensible)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PageUpdate' }
+      responses:
+        '200':
+          description: Page modifiée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Page' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------ COSTUMES
+  /costumes:
+    get:
+      tags: [Costumes]
+      summary: Consulter les costumes louables (US2.5)
+      x-min-role: public
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { name: available, in: query, schema: { type: boolean }, description: Filtrer sur la disponibilité }
+      responses:
+        '200':
+          description: Liste paginée
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginated'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Costume' }
+    post:
+      tags: [Costumes]
+      summary: Ajouter un costume (admin)
+      x-min-role: BOARD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CostumeInput' }
+      responses:
+        '201':
+          description: Costume créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Costume' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /costumes/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Costumes]
+      summary: Détail d'un costume
+      x-min-role: public
+      security: []
+      responses:
+        '200':
+          description: Costume
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Costume' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Costumes]
+      summary: Modifier un costume (admin)
+      x-min-role: BOARD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CostumeInput' }
+      responses:
+        '200':
+          description: Costume modifié
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Costume' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Costumes]
+      summary: Supprimer un costume (admin)
+      x-min-role: BOARD
+      responses:
+        '204': { description: Supprimé }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # -------------------------------------------------------------- EVENTS
+  /events:
+    get:
+      tags: [Events]
+      summary: Lister les évènements à venir (US3.1)
+      description: Les évènements passés sont exclus par défaut (`includePast=true` pour les voir).
+      x-min-role: public
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { name: type, in: query, schema: { $ref: '#/components/schemas/EventType' } }
+        - { name: includePast, in: query, schema: { type: boolean, default: false } }
+      responses:
+        '200':
+          description: Liste paginée triée par date
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginated'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Event' }
+    post:
+      tags: [Events]
+      summary: Créer un évènement (admin)
+      x-min-role: BOARD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventInput' }
+      responses:
+        '201':
+          description: Évènement créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /events/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Events]
+      summary: Détail d'un évènement
+      x-min-role: public
+      security: []
+      responses:
+        '200':
+          description: Évènement
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Events]
+      summary: Modifier un évènement (admin)
+      x-min-role: BOARD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventInput' }
+      responses:
+        '200':
+          description: Évènement modifié
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # -------------------------------------------------------------- ORDERS
+  /orders:
+    post:
+      tags: [Orders]
+      summary: Acheter des billets (US3.2)
+      description: |
+        Crée une commande `PENDING` et une session de paiement Stripe.
+        La commande n'est validée (`PAID`) et les billets générés que par le webhook de paiement.
+        Refus (409) si le nombre de places demandé dépasse le stock restant.
+      x-min-role: USER
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderCreate' }
+      responses:
+        '201':
+          description: Commande créée, URL de paiement à ouvrir
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderCheckout' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /me/orders:
+    get:
+      tags: [Orders]
+      summary: Consulter mes achats (US3.4)
+      description: Retourne uniquement les achats de l'utilisateur connecté.
+      x-min-role: MEMBER
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Liste paginée (vide si aucun achat)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginated'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Order' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /me/orders/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Orders]
+      summary: Détail d'un de mes achats (avec billets)
+      x-min-role: MEMBER
+      responses:
+        '200':
+          description: Commande
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /me/orders/{id}/resend-confirmation:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Orders]
+      summary: Renvoyer le mail de confirmation (US3.3)
+      x-min-role: USER
+      responses:
+        '204': { description: Mail renvoyé }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /tickets/{id}/pdf:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Orders]
+      summary: Télécharger un billet (PDF avec QR code)
+      x-min-role: USER (propriétaire du billet)
+      responses:
+        '200':
+          description: Billet PDF
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------ PAYMENTS
+  /payments/webhook:
+    post:
+      tags: [Payments]
+      summary: Webhook du prestataire de paiement
+      description: |
+        Appelé uniquement par Stripe. La signature (`Stripe-Signature`) est vérifiée.
+        Paiement réussi : commande `PAID`, billets générés, mail de confirmation envoyé.
+        Paiement échoué ou expiré : aucune commande validée, places libérées.
+      x-min-role: public (signature Stripe)
+      security: []
+      parameters:
+        - { name: Stripe-Signature, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { description: Évènement traité }
+        '400': { description: Signature invalide }
+
+  # --------------------------------------------------------- MEMBERSHIPS
+  /me/membership:
+    get:
+      tags: [Memberships]
+      summary: Consulter mon adhésion (US4.1)
+      x-min-role: MEMBER
+      responses:
+        '200':
+          description: Mon adhésion (statut, dates, groupes)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Membership' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Memberships]
+      summary: Modifier mes informations d'adhérent (US4.1)
+      x-min-role: MEMBER
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MembershipUpdate' }
+      responses:
+        '200':
+          description: Adhésion mise à jour
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Membership' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /me/membership/renew:
+    post:
+      tags: [Memberships]
+      summary: Renouveler / payer mon adhésion (US4.1)
+      description: Même fonctionnement que `POST /orders` (session Stripe, validation par webhook).
+      x-min-role: USER
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [groupIds]
+              properties:
+                groupIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        '201':
+          description: URL de paiement
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderCheckout' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /memberships:
+    get:
+      tags: [Memberships]
+      summary: Lister les fiches d'adhésion (US4.3)
+      description: Les consultations de fiches sont journalisées.
+      x-min-role: BOARD
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { name: groupId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/MembershipStatus' } }
+        - { name: search, in: query, schema: { type: string }, description: Recherche par nom }
+      responses:
+        '200':
+          description: Liste paginée
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginated'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Membership' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /memberships/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Memberships]
+      summary: Fiche d'adhésion complète d'un membre (US4.3)
+      x-min-role: BOARD
+      responses:
+        '200':
+          description: Fiche
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Membership' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # -------------------------------------------------------------- GROUPS
+  /groups:
+    get:
+      tags: [Groups]
+      summary: Lister les groupes (US4.2)
+      x-min-role: BOARD
+      responses:
+        '200':
+          description: Groupes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Group' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /groups/{id}/members:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Groups]
+      summary: Membres d'un groupe (US4.2)
+      x-min-role: BOARD
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { name: sort, in: query, schema: { type: string, enum: [lastName, firstName], default: lastName } }
+      responses:
+        '200':
+          description: Membres
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginated'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Membership' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --------------------------------------------------------------- MAILS
+  /me/mails:
+    get:
+      tags: [Mails]
+      summary: Consulter les mails qu'on m'a envoyés (US5.1)
+      x-min-role: MEMBER
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Historique de mes mails
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginated'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/MailLog' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /me/mails/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Mails]
+      summary: Lire un de mes mails (contenu HTML nettoyé)
+      x-min-role: MEMBER
+      responses:
+        '200':
+          description: Mail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailLog' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /mails/unsubscribe:
+    get:
+      tags: [Mails]
+      summary: Se désinscrire des campagnes (lien présent dans chaque mail)
+      x-min-role: public (jeton signé)
+      security: []
+      parameters:
+        - { name: token, in: query, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Désinscription prise en compte }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /campaigns:
+    get:
+      tags: [Mails]
+      summary: Lister les campagnes d'emails
+      x-min-role: BOARD
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Campagnes
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginated'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Campaign' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Mails]
+      summary: Créer une campagne d'emails (US5.3)
+      x-min-role: BOARD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CampaignInput' }
+      responses:
+        '201':
+          description: Campagne créée (brouillon)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /campaigns/{id}/test:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Mails]
+      summary: Envoyer un mail de test (US5.3)
+      x-min-role: BOARD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '204': { description: Mail de test envoyé }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /campaigns/{id}/send:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Mails]
+      summary: Lancer l'envoi de la campagne (US5.3)
+      description: |
+        Envoi asynchrone (file d'attente). Les adhérents désinscrits sont exclus.
+        Chaque envoi alimente l'historique des destinataires (`/me/mails`).
+      x-min-role: BOARD
+      responses:
+        '202':
+          description: Envoi planifié
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # -------------------------------------------------------------- PHOTOS
+  /photos:
+    get:
+      tags: [Photos]
+      summary: Voir les photos des évènements (US5.2)
+      x-min-role: MEMBER
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { name: eventId, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Photos (miniatures + URL pleine taille)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginated'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Photo' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Photos]
+      summary: Ajouter des photos à un évènement (admin)
+      x-min-role: BOARD
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [eventId, files]
+              properties:
+                eventId: { type: string, format: uuid }
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+      responses:
+        '201':
+          description: Photos ajoutées
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Photo' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /photos/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    delete:
+      tags: [Photos]
+      summary: Retirer une photo (droit à l'image)
+      x-min-role: BOARD
+      responses:
+        '204': { description: Photo retirée }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --------------------------------------------------------------- STATS
+  /stats:
+    get:
+      tags: [Stats]
+      summary: Consulter les statistiques (US6.1)
+      x-min-role: BOARD
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: Indicateurs sur la période
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stats' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ------------------------------------------------------------- MINUTES
+  /minutes:
+    get:
+      tags: [Minutes]
+      summary: Lister les PV d'AG (US6.3)
+      description: Un `MEMBER` ne voit que les PV publiés pour les adhérents. Le bureau voit aussi les brouillons et les PV réservés au bureau.
+      x-min-role: MEMBER
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: PV accessibles au rôle de l'appelant
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginated'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Minutes' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Minutes]
+      summary: Créer un PV d'AG en brouillon (US6.2)
+      x-min-role: BOARD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MinutesInput' }
+      responses:
+        '201':
+          description: PV créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Minutes' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /minutes/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Minutes]
+      summary: Consulter un PV d'AG
+      x-min-role: MEMBER (si publié pour les adhérents)
+      responses:
+        '200':
+          description: PV
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Minutes' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Minutes]
+      summary: Modifier un PV (US6.2)
+      description: Interdit (409) si le PV est déjà validé.
+      x-min-role: BOARD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MinutesInput' }
+      responses:
+        '200':
+          description: PV modifié
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Minutes' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /minutes/{id}/validate:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Minutes]
+      summary: Valider un PV (devient non modifiable) (US6.2)
+      x-min-role: BOARD
+      responses:
+        '200':
+          description: PV validé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Minutes' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /minutes/{id}/publish:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Minutes]
+      summary: Publier un PV et choisir sa visibilité (US6.3)
+      x-min-role: BOARD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [visibility]
+              properties:
+                visibility: { $ref: '#/components/schemas/MinutesVisibility' }
+      responses:
+        '200':
+          description: PV publié
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Minutes' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /minutes/{id}/pdf:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Minutes]
+      summary: Télécharger un PV publié (PDF)
+      x-min-role: MEMBER (selon visibilité)
+      responses:
+        '200':
+          description: PV au format PDF
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------- ACCOUNTING
+  /accounting:
+    get:
+      tags: [Accounting]
+      summary: Visualiser les informations de comptabilité (US6.4)
+      description: Recettes billetterie, cotisations et locations sur la période. Chaque accès est tracé.
+      x-min-role: TREASURER
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: Synthèse comptable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Accounting' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /accounting/export:
+    get:
+      tags: [Accounting]
+      summary: Exporter la comptabilité (CSV ou PDF)
+      x-min-role: TREASURER
+      parameters:
+        - { name: format, in: query, required: true, schema: { type: string, enum: [csv, pdf] } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: Fichier exporté
+          content:
+            text/csv:
+              schema: { type: string }
+            application/pdf:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+# ===================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  responses:
+    BadRequest:
+      description: Données invalides
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Non authentifié ou jeton expiré
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Rôle insuffisant ou ressource d'un autre utilisateur
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Ressource introuvable
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Conflit (doublon, stock insuffisant, état incompatible)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        statusCode: { type: integer, example: 403 }
+        message:
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string } }
+        error: { type: string, example: Forbidden }
+
+    Paginated:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+
+    Role:
+      type: string
+      enum: [USER, MEMBER, BOARD, TREASURER]
+    EventType:
+      type: string
+      enum: [STAGE, GALA, OTHER]
+    MembershipStatus:
+      type: string
+      enum: [ACTIVE, EXPIRED, PENDING]
+    OrderStatus:
+      type: string
+      enum: [PENDING, PAID, FAILED, CANCELLED]
+    MinutesStatus:
+      type: string
+      enum: [DRAFT, VALIDATED]
+    MinutesVisibility:
+      type: string
+      enum: [BOARD_ONLY, MEMBERS]
+
+    RegisterRequest:
+      type: object
+      required: [email, password, firstName, lastName]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password, minLength: 10 }
+        firstName: { type: string }
+        lastName: { type: string }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+    AuthResponse:
+      type: object
+      properties:
+        accessToken: { type: string }
+        expiresIn: { type: integer, description: Durée de validité en secondes }
+        user: { $ref: '#/components/schemas/User' }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        firstName: { type: string }
+        lastName: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        createdAt: { type: string, format: date-time }
+
+    Page:
+      type: object
+      properties:
+        slug: { type: string, example: partenaires }
+        title: { type: string }
+        content: { type: string, description: Contenu (HTML nettoyé) }
+        isSensitive: { type: boolean }
+        updatedAt: { type: string, format: date-time }
+    PageUpdate:
+      type: object
+      properties:
+        title: { type: string }
+        content: { type: string }
+
+    Costume:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        photoUrl: { type: string, format: uri }
+        available: { type: boolean }
+    CostumeInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        photoUrl: { type: string, format: uri }
+        available: { type: boolean, default: true }
+
+    Event:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        type: { $ref: '#/components/schemas/EventType' }
+        description: { type: string }
+        date: { type: string, format: date-time }
+        place: { type: string }
+        priceCents: { type: integer, example: 1500 }
+        capacity: { type: integer }
+        remainingPlaces: { type: integer }
+        isSoldOut: { type: boolean }
+    EventInput:
+      type: object
+      required: [title, type, date, place, priceCents, capacity]
+      properties:
+        title: { type: string }
+        type: { $ref: '#/components/schemas/EventType' }
+        description: { type: string }
+        date: { type: string, format: date-time }
+        place: { type: string }
+        priceCents: { type: integer, minimum: 0 }
+        capacity: { type: integer, minimum: 1 }
+
+    OrderCreate:
+      type: object
+      required: [eventId, quantity]
+      properties:
+        eventId: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 1, maximum: 10 }
+    OrderCheckout:
+      type: object
+      properties:
+        orderId: { type: string, format: uuid }
+        checkoutUrl: { type: string, format: uri, description: URL de paiement Stripe }
+    Order:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        totalCents: { type: integer }
+        createdAt: { type: string, format: date-time }
+        event: { $ref: '#/components/schemas/Event' }
+        tickets:
+          type: array
+          items: { $ref: '#/components/schemas/Ticket' }
+    Ticket:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, description: Identifiant unique encodé dans le QR code }
+        pdfUrl: { type: string }
+
+    Group:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        memberCount: { type: integer }
+    Membership:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user: { $ref: '#/components/schemas/User' }
+        season: { type: string, example: 2026-2027 }
+        status: { $ref: '#/components/schemas/MembershipStatus' }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date }
+        phone: { type: string }
+        address: { type: string }
+        groups:
+          type: array
+          items: { $ref: '#/components/schemas/Group' }
+    MembershipUpdate:
+      type: object
+      properties:
+        firstName: { type: string }
+        lastName: { type: string }
+        phone: { type: string }
+        address: { type: string }
+
+    MailLog:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        subject: { type: string }
+        body: { type: string, description: HTML nettoyé }
+        sentAt: { type: string, format: date-time }
+    Campaign:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        subject: { type: string }
+        body: { type: string }
+        targetGroupId: { type: string, format: uuid, nullable: true, description: null = tous les adhérents }
+        status: { type: string, enum: [DRAFT, SENDING, SENT] }
+        recipientCount: { type: integer }
+        sentAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    CampaignInput:
+      type: object
+      required: [subject, body]
+      properties:
+        subject: { type: string }
+        body: { type: string }
+        targetGroupId: { type: string, format: uuid, nullable: true }
+
+    Photo:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        thumbnailUrl: { type: string, format: uri }
+        url: { type: string, format: uri }
+
+    Stats:
+      type: object
+      properties:
+        period:
+          type: object
+          properties:
+            from: { type: string, format: date }
+            to: { type: string, format: date }
+        activeMembers: { type: integer }
+        ticketsSold: { type: integer }
+        ticketsByEvent:
+          type: array
+          items:
+            type: object
+            properties:
+              eventId: { type: string, format: uuid }
+              title: { type: string }
+              sold: { type: integer }
+        siteVisits: { type: integer }
+
+    Minutes:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        date: { type: string, format: date }
+        attendees:
+          type: array
+          items: { type: string }
+        content: { type: string }
+        status: { $ref: '#/components/schemas/MinutesStatus' }
+        published: { type: boolean }
+        visibility: { $ref: '#/components/schemas/MinutesVisibility' }
+        createdBy: { type: string, format: uuid }
+    MinutesInput:
+      type: object
+      required: [date, content]
+      properties:
+        date: { type: string, format: date }
+        attendees:
+          type: array
+          items: { type: string }
+        content: { type: string }
+
+    Accounting:
+      type: object
+      properties:
+        period:
+          type: object
+          properties:
+            from: { type: string, format: date }
+            to: { type: string, format: date }
+        ticketRevenueCents: { type: integer }
+        membershipRevenueCents: { type: integer }
+        costumeRentalRevenueCents: { type: integer }
+        totalRevenueCents: { type: integer }
+        transactions:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date-time }
+              label: { type: string }
+              category: { type: string, enum: [TICKET, MEMBERSHIP, RENTAL] }
+              amountCents: { type: integer }
